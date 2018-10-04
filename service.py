@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-from http.server import HTTPServer
-from http.server import BaseHTTPRequestHandler
+
 from http import HTTPStatus
 import configparser
-import argparse
 import subprocess as sp
 from time import sleep
 import os
 import sys
 from threading import Thread
-import json
 import requests
 import re
-from functools import reduce
+import shutil
+
 '''
 urls уточнять у документации по ресту.
 Service стартует программу, которую написали в конфиге в app.
@@ -36,7 +34,7 @@ Service стартует программу, которую написали в 
     |--------|-------------|------------|---------------------------------------|
     |*       | *           | error_work | Ошибка найденая в ходе работы, по конф|
     |--------|-------------|------------|---------------------------------------|
-    |*       | ready_diag  | *          | Ошибка найденая в ходе работы, по конф|
+    |*       | ready_diag  | *          | После завершения работы гоовность списывать|
     |--------|-------------|------------|---------------------------------------|
     
     Не забывать указывать в headers dir_name, для определения сервиса в БД по уникальному имени папки.
@@ -76,6 +74,7 @@ class Service(Thread):
         # имя приложения, для контроллера
         self.name = config.get('app', 'name')
         self.app = config.get('app', 'path')
+        self.diag = config.get('app', 'diag')
         self.config_errors = config.get('app', 'errors').split(' ')
         self.dir_name = os.path.dirname(sys.modules['__main__'].__file__).split('/')[-1]
         self.session = requests.Session()
@@ -91,22 +90,22 @@ class Service(Thread):
         url = 'http://{ip}:{port}/{api}/service'.format(ip=self.server_ip,
                                                        port=self.server_port,
                                                        api=API_VERSION)
-        data = {'name': self.name, 'dir_name': self.dir_name}
-        json_data = json.dumps(data)
+        headers = {'dir_name': self.dir_name, }
+        data = {'name': self.name}
         # ломимся на сервер, пока не получится авторизоваться 1 раз в секунду
         while True:
             try:
                 sleep(1)
-                res = self.session.post(url=url, data=json_data)
+                res = self.session.post(url=url, json=data, headers=headers)
                 if res.status_code == HTTPStatus.CONFLICT:
-                    self.session.put(url=url, data=json_data)
+                    self.session.put(url=url, json=data, headers=headers)
             except Exception as error:
                 print("<runner thread> Нет связи для авторизации\n", error)
                 continue
             if res.status_code == HTTPStatus.CREATED:
                 return True
             if res.status_code == HTTPStatus.CONFLICT:
-                res = self.session.put(url=url, data=json_data)
+                res = self.session.put(url=url, json=data, headers=headers)
                 if res.status_code == HTTPStatus.ACCEPTED:
                     return True
             else:
@@ -117,8 +116,7 @@ class Service(Thread):
         data = {'state': self.state, 'error': self.error}
         print('<send_state>', self.state)
         headers = {'dir_name': self.dir_name}
-        json_data = json.dumps(data)
-        self.session.put(url, json_data, headers=headers)
+        self.session.put(url, json=data, headers=headers)
 
     def update_command(self):
         url = 'http://{ip}:{port}/{api}/service/command'.format(ip=self.server_ip, port=self.server_port,
@@ -149,6 +147,10 @@ class Service(Thread):
             self.stop_app()
             self.send_state()
 
+        if command == 'diag':
+            self.send_diag()
+            self.send_state()
+
     def start_app(self):
         self.state = 'not_started'
         if not self.process:
@@ -162,7 +164,7 @@ class Service(Thread):
                 self.controller.start()
                 return
         else:
-            # TODO: заглушка, если два раза нажали на кнопку старта
+            # TODO: заглушка, если два раза нажали на кнопку старт
             self.state = 'started'
 
     def stop_app(self):
@@ -193,6 +195,39 @@ class Service(Thread):
             self.send_state()
             sleep(1)
         self.buffer.clear()
+
+    def send_diag(self):
+
+        self.state = 'error_diag'
+        url = 'http://{ip}:{port}/{api}/service/diag'.format(ip=self.server_ip, port=self.server_port,
+                                                                api=API_VERSION)
+        headers = {'dir_name': self.dir_name}
+
+        if not os.path.isdir(self.diag):
+            self.error = 'Неправильный путь к диагностике, {diag}'.format(diag=self.diag)
+            return
+
+        files = dict()
+        for root, _dir, _files in os.walk(self.diag):
+            for _file in _files:
+
+                abs_file = os.path.join(root, _file)
+                # TODO: названия файлов в кириллице(русские) не передает!
+
+                dop = root.split(self.diag)[-1]
+                if re.search('^/', dop):
+                    dop = dop[1:]
+                key = os.path.join(dop, _file)
+                files[key] = open(abs_file, 'rb')
+
+        res = self.session.post(url, files=files, headers=headers)
+
+        if res.status_code == HTTPStatus.ACCEPTED:
+            self.state = 'sended_diag'
+            self.clear_diag()
+
+    def clear_diag(self):
+        shutil.rmtree(self.diag)
 
 
 class Controller(Thread):
@@ -235,5 +270,6 @@ class Controller(Thread):
 
 if __name__ == '__main__':
     serv = Service()
-    serv.start_command('start')
+    serv.clear_diag()
+
 
