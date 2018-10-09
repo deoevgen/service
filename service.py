@@ -207,18 +207,8 @@ class Service(Thread):
             self.error = 'Неправильный путь к диагностике, {diag}'.format(diag=self.diag)
             return
 
-        files = dict()
-        for root, _dir, _files in os.walk(self.diag):
-            for _file in _files:
-
-                abs_file = os.path.join(root, _file)
-                # TODO: названия файлов в кириллице(русские) не передает!
-
-                dop = root.split(self.diag)[-1]
-                if re.search('^/', dop):
-                    dop = dop[1:]
-                key = os.path.join(dop, _file)
-                files[key] = open(abs_file, 'rb')
+        archive_name = shutil.make_archive(base_name='diag', base_dir=self.diag, format='tar')
+        files = {archive_name: open(archive_name, 'rb')}
 
         res = self.session.post(url, files=files, headers=headers)
 
