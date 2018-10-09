@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from http import HTTPStatus
 import configparser
 import subprocess as sp
