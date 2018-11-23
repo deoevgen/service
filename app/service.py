@@ -34,6 +34,10 @@ Service стартует программу, которую написали в 
     |--------|-------------|------------|---------------------------------------|
     |*       | ready_diag  | *          | После завершения работы гоовность списывать|
     |--------|-------------|------------|---------------------------------------|
+    |config  |sended_config|error_config|Отправление файла конфигурации         |
+    |--------|-------------|------------|---------------------------------------|
+    |set_config|config_set|error_set_config|Изменение файла конфигурации        |
+    |--------|-------------|------------|---------------------------------------|
     
     Не забывать указывать в headers dir_name, для определения сервиса в БД по уникальному имени папки.
     
@@ -63,6 +67,16 @@ class Service(Thread):
         config_path = os.path.dirname(sys.argv[0])
         config.read(os.path.join(config_path, 'config.ini'))
 
+        # ordered_fies = config._sections.get('files')
+        # for key in ordered_fies:
+        #     value = config.get('files', key)
+        #
+        # config.set('files', 'z', 'amp_test')
+        #
+        # with open('example.ini', 'w') as configfile:
+        #     config.write(configfile)
+        # exit()
+
         # порт прложения, берется из аргумента при запуске программы
         self.port = None
 
@@ -73,7 +87,7 @@ class Service(Thread):
         self.name = config.get('app', 'name')
         self.app = config.get('app', 'path')
         self.diag = config.get('app', 'diag')
-        self.config_errors = config.get('app', 'errors').split(' ')
+        self.config_errors = config.get('control', 'errors').split(' ')
         self.dir_name = os.path.dirname(sys.modules['__main__'].__file__).split('/')[-1]
         self.session = requests.Session()
 
@@ -149,6 +163,14 @@ class Service(Thread):
             self.send_diag()
             self.send_state()
 
+        if command == 'config':
+            self.send_config()
+            self.send_state()
+
+        if command == 'set_config':
+            self.save_config()
+            self.send_state()
+
     def start_app(self):
         self.state = 'not_started'
         if not self.process:
@@ -217,6 +239,28 @@ class Service(Thread):
     def clear_diag(self):
         shutil.rmtree(self.diag)
 
+    def send_config(self):
+        self.state = 'error_config'
+        url = 'http://{ip}:{port}/{api}/service/config'.format(ip=self.server_ip, port=self.server_port,
+                                                                api=API_VERSION)
+        headers = {'dir_name': self.dir_name}
+        config_path = os.path.dirname(sys.argv[0])
+        config_file = os.path.join(config_path, 'config.ini')
+        with open(config_file, 'r') as file:
+            text = file.read()
+            res = self.session.put(url, json={'config': text}, headers=headers)
+
+        if res.status_code == HTTPStatus.ACCEPTED:
+            self.state = 'sended_config'
+
+    def save_config(self):
+        self.state = 'error_config'
+        url = 'http://{ip}:{port}/{api}/service/config'.format(ip=self.server_ip, port=self.server_port,
+                                                                api=API_VERSION)
+        headers = {'dir_name': self.dir_name}
+        res = self.session.get(url, headers=headers)
+        print(res)
+
 
 class Controller(Thread):
     buff = None
@@ -258,6 +302,6 @@ class Controller(Thread):
 
 if __name__ == '__main__':
     serv = Service()
-    serv.clear_diag()
+    serv.send_config()
 
 
