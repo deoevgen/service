@@ -8,6 +8,9 @@ from threading import Thread
 import requests
 import re
 import shutil
+import base64
+from shutil import unpack_archive
+from string import Formatter
 
 '''
 urls уточнять у документации по ресту.
@@ -24,7 +27,8 @@ Service стартует программу, которую написали в 
     |--------|-------------|------------|---------------------------------------|
     |state   | *           | *          |Проверка статуса (service return state |
     |        |             |            |   in put, url=/runner/state )         |
-    |        |             |            | в headers передавать dir_name         |
+    |        |             |            | в headers передавать dir_name и       |
+    |        |             |            | verbose                               |
     |--------|-------------|------------|---------------------------------------|
     |diag    | sended_diag | error_diag |Отправление диагностики                |
     |--------|-------------|------------|---------------------------------------|
@@ -38,8 +42,11 @@ Service стартует программу, которую написали в 
     |--------|-------------|------------|---------------------------------------|
     |set_config|config_set|error_set_config|Изменение файла конфигурации        |
     |--------|-------------|------------|---------------------------------------|
+    |update  |updated      |not_updated |Получение новых файлов, необходимых    |
+    |        |             |            | для запуска                           |
+    |--------|-------------|------------|---------------------------------------|
     
-    Не забывать указывать в headers dir_name, для определения сервиса в БД по уникальному имени папки.
+    Не забывать указывать в headers dir_name, verbose для определения сервиса в БД по уникальному имени папки.
     
     контроль запуска и контроль файлов для запуска.
    
@@ -56,6 +63,8 @@ API_VERSION = 'api/v1'
 class Service(Thread):
 
     state = 'launched'
+    verbose = '0000'
+    update_attempt = 0
     error = ''
     process = None
     controller = None
@@ -67,16 +76,6 @@ class Service(Thread):
         config_path = os.path.dirname(sys.argv[0])
         config.read(os.path.join(config_path, 'config.ini'))
 
-        # ordered_fies = config._sections.get('files')
-        # for key in ordered_fies:
-        #     value = config.get('files', key)
-        #
-        # config.set('files', 'z', 'amp_test')
-        #
-        # with open('example.ini', 'w') as configfile:
-        #     config.write(configfile)
-        # exit()
-
         # порт прложения, берется из аргумента при запуске программы
         self.port = None
 
@@ -86,6 +85,7 @@ class Service(Thread):
         # имя приложения, для контроллера
         self.name = config.get('app', 'name')
         self.app = config.get('app', 'path')
+        self.start_command_line = config.get('app', 'start_command')
         self.diag = config.get('app', 'diag')
         self.config_errors = config.get('control', 'errors').split(' ')
         self.dir_name = os.path.dirname(sys.modules['__main__'].__file__).split('/')[-1]
@@ -137,22 +137,27 @@ class Service(Thread):
         try:
             res = self.session.get(url, headers=headers)
             if res.status_code == HTTPStatus.ACCEPTED:
-                command = res.json().get('command')
+                data = res.json()
+                command = data.get('command')
                 print('<service> command: ', command)
-                self.start_command(command)
+                self.start_command(command, data)
             else:
                 print('<service> Ошибка получения команды, код ошибки: ', res.status_code)
 
         except Exception as error:
-            print(error)
+            print('error', error)
 
-    def start_command(self, command):
+    def start_command(self, command, data):
 
         if self.state == 'started':
             self.control_app()
 
+        if command == 'not_start':
+            self.state = 'not_started'
+            self.send_state()
+
         if command == 'start':
-            self.start_app()
+            self.start_app(data)
             self.send_state()
 
         if command == 'stop':
@@ -171,9 +176,31 @@ class Service(Thread):
             self.save_config()
             self.send_state()
 
-    def start_app(self):
+        if command == 'update':
+            self.update_attempt = self.update_attempt + 1
+            print('update_attempt', self.update_attempt)
+            if self.update_attempt == 4:
+                self.state = 'error_update'
+                self.send_state()
+                return
+            self.update_files()
+            self.send_state()
+
+    def start_app(self, kwargs):
         self.state = 'not_started'
         if not self.process:
+            kwargs['path'] = self.app
+
+            #  поиск файлов в параметрах и подставление абсолюдного пути в kwargs
+            for key, val in kwargs.items():
+                if 'comf_' in key:
+                    if os.path.isfile(os.path.join('files', kwargs.get('mode'), val)):
+                        file_abs = os.path.abspath(os.path.join('files', kwargs.get('mode'), val))
+                        kwargs[key] = file_abs
+
+            fmt = UnseenFormatter()
+            start_command_line = fmt.format(self.start_command_line, **kwargs)
+            print('[start_app] start_command_line', start_command_line)
             proc = sp.Popen([self.app], stdout=sp.PIPE, stderr=sp.PIPE)
             sleep(1)
             if proc.poll() is None:
@@ -184,7 +211,7 @@ class Service(Thread):
                 self.controller.start()
                 return
         else:
-            # TODO: заглушка, если два раза нажали на кнопку старт
+            # заглушка, если два раза нажали на кнопку старт
             self.state = 'started'
 
     def stop_app(self):
@@ -201,7 +228,7 @@ class Service(Thread):
                 self.process = None
                 self.state = 'stopped'
         else:
-            # TODO: заглушка, если два раза нажали на кнопку stop
+            # заглушка, если два раза нажали на кнопку stop
             self.state = 'stopped'
 
     def control_app(self):
@@ -259,7 +286,51 @@ class Service(Thread):
                                                                 api=API_VERSION)
         headers = {'dir_name': self.dir_name}
         res = self.session.get(url, headers=headers)
-        print(res)
+
+        config_path = os.path.dirname(sys.argv[0])
+        config_file = os.path.join(config_path, 'config.ini')
+        config = res.json().get('config')
+        with open(config_file, 'w+') as file:
+            file.write(config)
+        self.send_config()
+        self.send_state()
+
+    def update_files(self):
+        self.state = 'not_updated'
+        url = 'http://{ip}:{port}/{api}/service/update'.format(ip=self.server_ip, port=self.server_port,
+                                                                api=API_VERSION)
+        headers = {'dir_name': self.dir_name}
+        res = self.session.get(url, headers=headers)
+        if res.ok:
+            data = res.json()
+
+            if data.get('file') == 'not_found':  # признак отсутствия файлов, возможно они не нужны.
+                self.state = 'not_found_file'
+                return
+            file_name = data.get('file_name')
+            abspath_file = os.path.join('/tmp', file_name)
+            content = data.get('data')
+            decoded_content = base64.b64decode(content)
+            with open(abspath_file, 'wb+') as archive:
+                archive.write(decoded_content)
+                archive.close()
+
+            if data.get('md5sum') != self.md5(abspath_file):
+                os.remove(abspath_file)
+                return
+
+            shutil.rmtree('files/')
+            unpack_archive(abspath_file, extract_dir='files/', format="tar")
+            self.state = 'updated'
+
+    @staticmethod
+    def md5(filename):
+        import hashlib
+        with open(filename, 'rb') as f:
+            m = hashlib.md5()
+            for chank in iter(lambda: f.read(4096), b""):
+                m.update(chank)
+            return m.hexdigest()
 
 
 class Controller(Thread):
@@ -298,6 +369,18 @@ class Controller(Thread):
 
     def find_error(self, _re):
         return _re.search(self.line)
+
+
+class UnseenFormatter(Formatter):
+    # расширенный формат строки, при котором убираем отсутствующие элементы в словаре из строки, заменяя их на ''
+    def get_value(self, key, args, kwargs):
+        if isinstance(key, str):
+            try:
+                return kwargs[key]
+            except KeyError:
+                return ''
+        else:
+            return Formatter.get_value(key, args, kwargs)
 
 
 if __name__ == '__main__':
