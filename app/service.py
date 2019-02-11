@@ -73,7 +73,7 @@ class Service(Thread):
     def __init__(self):
         super(Service, self).__init__()
         config = configparser.ConfigParser()
-        config_path = os.path.dirname(sys.argv[0])
+        config_path = os.path.abspath(os.path.dirname(sys.argv[0]))
         config.read(os.path.join(config_path, 'config.ini'))
 
         # порт прложения, берется из аргумента при запуске программы
@@ -319,7 +319,8 @@ class Service(Thread):
                 os.remove(abspath_file)
                 return
 
-            shutil.rmtree('files/')
+            if os.path.isdir('files'):
+                shutil.rmtree('files/')
             unpack_archive(abspath_file, extract_dir='files/', format="tar")
             self.state = 'updated'
 
