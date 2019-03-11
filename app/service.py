@@ -88,7 +88,7 @@ class Service(Thread):
         self.start_command_line = config.get('app', 'start_command')
         self.diag = config.get('app', 'diag')
         self.config_errors = config.get('control', 'errors').split(' ')
-        self.dir_name = os.path.dirname(sys.modules['__main__'].__file__).split('/')[-1]
+        self.dir_name = os.path.abspath(sys.modules['__main__'].__file__).split('/')[-2]
         self.session = requests.Session()
 
     def run(self):
