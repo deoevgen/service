@@ -36,8 +36,6 @@ Service стартует программу, которую написали в 
     |--------|-------------|------------|---------------------------------------|
     |*       | *           | error_work | Ошибка найденая в ходе работы, по конф|
     |--------|-------------|------------|---------------------------------------|
-    |*       | ready_diag  | *          | После завершения работы гоовность списывать|
-    |--------|-------------|------------|---------------------------------------|
     |config  |sended_config|error_config|Отправление файла конфигурации         |
     |--------|-------------|------------|---------------------------------------|
     |set_config|config_set|error_set_config|Изменение файла конфигурации        |
@@ -69,6 +67,7 @@ class Service(Thread):
     process = None
     controller = None
     buffer = list()
+    name_console_log = 'console_log.log'
 
     def __init__(self):
         super(Service, self).__init__()
@@ -86,12 +85,17 @@ class Service(Thread):
         self.name = config.get('app', 'name')
         self.app = config.get('app', 'path')
         self.start_command_line = config.get('app', 'start_command')
-        self.diag = config.get('app', 'diag')
         self.config_errors = config.get('control', 'errors').split(' ')
         self.dir_name = os.path.abspath(sys.modules['__main__'].__file__).split('/')[-2]
         self.session = requests.Session()
 
+        try:
+            self.diag = config.get('app', 'diag').format(name=self.name)
+        except:
+            self.diag = os.path.abspath('diag')
+
     def run(self):
+        self.init_diag()
         if self.authorization():
             self.send_state()
             while True:
@@ -147,34 +151,33 @@ class Service(Thread):
         except Exception as error:
             print('error', error)
 
+    def init_diag(self):
+        if os.path.isdir(self.diag):
+            self.clear_diag()
+
+        os.makedirs(self.diag)
+
     def start_command(self, command, data):
 
+        # выполняется каждый раз, при выполнии функции
         if self.state == 'started':
             self.control_app()
 
-        if command == 'not_start':
-            self.state = 'not_started'
-            self.send_state()
-
         if command == 'start':
             self.start_app(data)
-            self.send_state()
 
         if command == 'stop':
             self.stop_app()
-            self.send_state()
+            self.send_log()
 
         if command == 'diag':
             self.send_diag()
-            self.send_state()
 
         if command == 'config':
             self.send_config()
-            self.send_state()
 
         if command == 'set_config':
             self.save_config()
-            self.send_state()
 
         if command == 'update':
             self.update_attempt = self.update_attempt + 1
@@ -184,10 +187,13 @@ class Service(Thread):
                 self.send_state()
                 return
             self.update_files()
-            self.send_state()
 
-    def start_app(self, kwargs):
-        self.state = 'not_started'
+        self.send_state()
+
+    def start_app(self, kwargs, count_starts=0):
+        self.state = 'starting'
+        self.send_state()
+        print('count_starts', count_starts)
         if not self.process:
             kwargs['path'] = self.app
 
@@ -201,26 +207,40 @@ class Service(Thread):
             fmt = UnseenFormatter()
             start_command_line = fmt.format(self.start_command_line, **kwargs)
             print('[start_app] start_command_line', start_command_line)
-            proc = sp.Popen([self.app], stdout=sp.PIPE, stderr=sp.PIPE)
+            try:
+                proc = sp.Popen([self.app], stdout=sp.PIPE, stderr=sp.PIPE)
+            except:
+                proc = None
             sleep(1)
-            if proc.poll() is None:
-                self.state = 'started'
-                self.process = proc
-                # поток проверки конслольного приложения
-                self.controller = Controller(proc, self.buffer, self.config_errors)
-                self.controller.start()
-                return
+
+            # првоерка запуска процесса
+            if proc is not None:
+                if proc.poll() is None:
+                    self.state = 'started'
+                    self.process = proc
+                    # поток проверки конслольного приложения
+                    self.controller = Controller(proc,
+                                                 self.buffer,
+                                                 self.config_errors,
+                                                 os.path.join(self.diag, self.name_console_log))
+                    self.controller.start()
+                    return
+            else:
+                if count_starts == 3:
+                    self.state = 'not_started'
+                    return
+                self.start_app(kwargs, count_starts+1)
         else:
             # заглушка, если два раза нажали на кнопку старт
             self.state = 'started'
 
     def stop_app(self):
         self.state = 'not_stopped'
+
         if self.process:
             self.process.kill()
             self.controller.stop()
             sleep(1)
-
             if self.process.poll() is None:
                 self.error = 'Процесс не завершился.'
                 self.state = 'not_stopped'
@@ -234,8 +254,8 @@ class Service(Thread):
     def control_app(self):
         # вот тут проверка на работоспособность из буфера
         for mes in self.buffer:
-            if mes == 'ready_diag':
-                self.state = 'ready_diag'
+            if mes == 'stopped':
+                self.state = 'stopped'
             else:
                 self.state = 'error_work'
             self.error = mes
@@ -261,7 +281,8 @@ class Service(Thread):
 
         if res.status_code == HTTPStatus.ACCEPTED:
             self.state = 'sended_diag'
-            self.clear_diag()
+
+        os.remove(archive_name)
 
     def clear_diag(self):
         shutil.rmtree(self.diag)
@@ -333,6 +354,22 @@ class Service(Thread):
                 m.update(chank)
             return m.hexdigest()
 
+    def send_log(self):
+        headers = {'dir_name': self.dir_name}
+
+        url = 'http://{ip}:{port}/{api}/service/log'.format(ip=self.server_ip, port=self.server_port,
+                                                                api=API_VERSION)
+
+        with open(os.path.join(self.diag, self.name_console_log), 'r') as log_file:
+            data = log_file.read()
+
+            res = self.session.put(url, json={'log': data}, headers=headers)
+
+        if res.status_code == HTTPStatus.ACCEPTED:
+            print('Успешно отправлены логи')
+        else:
+            print('Ошибка управления')
+
 
 class Controller(Thread):
     buff = None
@@ -340,29 +377,33 @@ class Controller(Thread):
     _stop = False
     re_list = list()
     errors = ''
+    line = ''
+    path_log_file = None
 
-    def __init__(self, proc, buff, errors):
+    def __init__(self, proc, buff, errors, path_log_file):
         super(Controller, self).__init__()
         self.process = proc
         self.buff = buff
         self.errors = errors
+        self.path_log_file = path_log_file
 
     def run(self):
         re_list = list(map(self.gen_re, self.errors))
+        with open(self.path_log_file, 'w+') as file_log:
+            for _line in iter(self.process.stdout.readline, ''):
+                file_log.write(self.line + '\n')
+                self.line = _line.rstrip().decode('utf-8')
 
-        for _line in iter(self.process.stdout.readline, ''):
-            self.line = _line.rstrip().decode('utf-8')
+                result = list(map(self.find_error, re_list))
+                if any(result):
+                    self.buff.append(self.line)
+                    self.stop()
 
-            result = list(map(self.find_error, re_list))
-            if any(result):
-                self.buff.append(self.line)
-                self.stop()
-
-            if self._stop:
-                return
+                if self._stop:
+                    return
 
     def stop(self):
-        self.buff.append('ready_diag')
+        self.buff.append('stopped')
         self._stop = True
 
     def gen_re(self, text):
