@@ -215,6 +215,7 @@ class Service(Thread):
 
             # првоерка запуска процесса
             if proc is not None:
+                print('proc.poll()', proc.poll())
                 if proc.poll() is None:
                     self.state = 'started'
                     self.process = proc
@@ -224,6 +225,10 @@ class Service(Thread):
                                                  self.config_errors,
                                                  os.path.join(self.diag, self.name_console_log))
                     self.controller.start()
+                    return
+                else:
+                    self.error = os.strerror(proc.poll())
+                    self.state = 'not_started'
                     return
             else:
                 if count_starts == 3:
