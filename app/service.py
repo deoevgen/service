@@ -215,8 +215,8 @@ class Service(Thread):
 
             # првоерка запуска процесса
             if proc is not None:
-                print('proc.poll()', proc.poll())
-                if proc.poll() is None:
+                alive = proc.poll()
+                if alive is None:
                     self.state = 'started'
                     self.process = proc
                     # поток проверки конслольного приложения
@@ -227,7 +227,7 @@ class Service(Thread):
                     self.controller.start()
                     return
                 else:
-                    self.error = os.strerror(proc.poll())
+                    self.error = os.strerror(alive)
                     self.state = 'not_started'
                     return
             else:
@@ -365,10 +365,14 @@ class Service(Thread):
         url = 'http://{ip}:{port}/{api}/service/log'.format(ip=self.server_ip, port=self.server_port,
                                                                 api=API_VERSION)
 
-        with open(os.path.join(self.diag, self.name_console_log), 'r') as log_file:
-            data = log_file.read()
+        if os.path.isfile(os.path.join(self.diag, self.name_console_log)):
 
-            res = self.session.put(url, json={'log': data}, headers=headers)
+            with open(os.path.join(self.diag, self.name_console_log), 'r') as log_file:
+                data = log_file.read()
+        else:
+            data = 'Отсутствует файл диагностики'
+
+        res = self.session.put(url, json={'log': data}, headers=headers)
 
         if res.status_code == HTTPStatus.ACCEPTED:
             print('Успешно отправлены логи')
