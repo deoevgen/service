@@ -391,16 +391,19 @@ class Controller(Thread):
         re_list = list(map(self.gen_re, self.errors))
         with open(self.path_log_file, 'w+') as file_log:
             for _line in iter(self.process.stdout.readline, ''):
-                file_log.write(self.line + '\n')
-                self.line = _line.rstrip().decode('utf-8')
 
-                result = list(map(self.find_error, re_list))
-                if any(result):
-                    self.buff.append(self.line)
-                    self.stop()
+                # бывают пустые     прерывания о записи в программах
+                if _line != '':
+                    file_log.write(self.line + '\n')
+                    self.line = _line.rstrip().decode('utf-8')
 
-                if self._stop:
-                    return
+                    result = list(map(self.find_error, re_list))
+                    if any(result):
+                        self.buff.append(self.line)
+                        self.stop()
+
+                    if self._stop:
+                        return
 
     def stop(self):
         self.buff.append('stopped')
