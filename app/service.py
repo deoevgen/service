@@ -216,7 +216,7 @@ class Service(Thread):
             # првоерка запуска процесса
             if proc is not None:
                 alive = proc.poll()
-                if alive is None:
+                if alive == 0:
                     self.state = 'started'
                     self.process = proc
                     # поток проверки конслольного приложения
@@ -228,6 +228,8 @@ class Service(Thread):
                     return
                 else:
                     self.error = os.strerror(alive)
+                    error = proc.stderr.readline()
+                    print(error)
                     self.state = 'not_started'
                     return
             else:
