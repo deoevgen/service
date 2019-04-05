@@ -208,7 +208,7 @@ class Service(Thread):
             start_command_line = fmt.format(self.start_command_line, **kwargs)
             print('[start_app] start_command_line', start_command_line)
             try:
-                proc = sp.Popen([self.app], stdout=sp.PIPE, stderr=sp.PIPE)
+                proc = sp.Popen([self.app], stdout=sp.PIPE, stderr=sp.PIPE, close_fds=True)
             except:
                 proc = None
             sleep(1)
@@ -440,5 +440,3 @@ class UnseenFormatter(Formatter):
 if __name__ == '__main__':
     serv = Service()
     serv.send_config()
-
-
